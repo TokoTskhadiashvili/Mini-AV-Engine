@@ -143,12 +143,10 @@ public:
 		return true;
 	}
 
-	bool alert(std::string& path, std::string& message) {
+	bool alert(std::string& data) {
 		if (!connection) return false;
-		
-		std::string data = "{\"message\": \"" + message + "\"}";
 
-		HINTERNET request = HttpOpenRequestA(connection, "POST", path.c_str(), NULL, NULL, NULL, flags, 0);
+		HINTERNET request = HttpOpenRequestA(connection, "POST", "/api/child/alert", NULL, NULL, NULL, flags, 0);
 		if (!request) {
 			return false;
 		}
