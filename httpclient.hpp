@@ -43,7 +43,7 @@ public:
 	/* Use right after connect(); */
 	bool set_cookie(std::string& url, const std::string& name, std::string& value) {
 		std::string cookie = name + "=" + value + "; path=/";
-		return InternetSetCookieA(url.c_str(), nullptr, cookie.c_str()) == true;
+		return InternetSetCookieA(url.c_str(), nullptr, cookie.c_str()) == TRUE;
 	}
 
 	void disconnect() {
@@ -152,7 +152,7 @@ public:
 		}
 
 		std::string headers = "Content-Type: application/json\r\n";
-		BOOL result = HttpSendRequestA(request, headers.c_str(), headers.size(), const_cast<char*>(data.data()), data.size());
+		bool result = HttpSendRequestA(request, headers.c_str(), static_cast<DWORD>(headers.size()), const_cast<char*>(data.data()), static_cast<DWORD>(data.size()));
 		if (!result) {
 			InternetCloseHandle(request);
 			return false;
