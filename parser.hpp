@@ -32,3 +32,17 @@ std::map<std::string, std::string> parse_config(std::string& path) {
 
 	return config;
 }
+
+std::vector<std::string> parse_directory_list(std::string& value) {
+	std::vector<std::string> result;
+	std::stringstream ss(value);
+	std::string directory;
+
+	while (std::getline(ss, directory, ';')) {
+		if (!directory.empty()) {
+			result.push_back(directory);
+		}
+	}
+
+	return result;
+}
