@@ -1,5 +1,6 @@
 #pragma once
 
+#include <iostream>
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -9,44 +10,26 @@
 #include <Windows.h>
 #include <Wininet.h>
 
+#define USER_AGENT "Mini AV Engine 1.0"
+
 #pragma comment(lib, "wininet.lib")
 
-class HttpClient {
-private:
-	HINTERNET session = nullptr;
-	HINTERNET connection = nullptr;
-	DWORD flags = INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
-
-	std::vector<std::string> server_rules;
-	std::vector<std::string> local_rules;
-
-public:
-	void set_local_rules(std::vector<std::string>& rules) {
-
+bool ConnectServer(HINTERNET& session, HINTERNET& connection, std::string& host, std::string& user_agent) {
+	session = InternetOpenA(user_agent.c_str(), INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
+	if (!session) {
+		return false;
 	}
 
-	bool connect(std::string& host, std::string& user_agent) {
-		session = InternetOpenA(user_agent.c_str(), INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
-		if (!session) {
-			return false;
-		}
-
-		connection = InternetConnectA(session, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, "", "", INTERNET_SERVICE_HTTP, 0, 0);
-		if (!connection) {
-			InternetCloseHandle(session);
-			return false;
-		}
-
-		return true;
+	connection = InternetConnectA(session, host.c_str(), 8080, "", "", INTERNET_SERVICE_HTTP, 0, 0);
+	if (!connection) {
+		return false;
 	}
 
-	/* Use right after connect(); */
-	bool set_cookie(std::string& url, const std::string& name, std::string& value) {
-		std::string cookie = name + "=" + value + "; path=/";
-		return InternetSetCookieA(url.c_str(), nullptr, cookie.c_str()) == TRUE;
-	}
+	return true;
+}
 
-	void disconnect() {
+bool DisconnectServer(HINTERNET& session, HINTERNET& connection) {
+	try {
 		if (connection) {
 			InternetCloseHandle(connection);
 			connection = nullptr;
@@ -56,122 +39,147 @@ public:
 			InternetCloseHandle(session);
 			session = nullptr;
 		}
-	}
-
-	bool fetch_all_rules(std::string& host) {
-		std::string data;
-		HINTERNET file = InternetOpenUrlA(session, host.c_str(), NULL, 0, INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE, 0);
-		if (!file) {
-			return false;
-		}
-
-		char buffer[4096];
-		memset(buffer, 0, 4096);
-		DWORD read = 0;
-
-		while (InternetReadFile(file, buffer, 4096, &read) && read > 0) {
-			data.append(buffer, read);
-		}
-
-		InternetCloseHandle(file);
-
-		if (data.size() >= 3 && static_cast<unsigned char>(data[0]) == 0xEF && static_cast<unsigned char>(data[1]) == 0xBB && static_cast<unsigned char>(data[2]) == 0xBF) {
-			data.erase(0, 3);
-		}
-
-		std::istringstream iss(data);
-		std::string line;
-
-		while (std::getline(iss, line)) {
-			if (!line.empty() && line.back() == '\r') {
-				line.pop_back();
-			}
-
-			if (!line.empty()) {
-				server_rules.push_back(line);
-			}
-		}
 
 		return true;
 	}
+	catch (...) {
+		return false;
+	}
+}
 
-	void filter_rules() {
-		server_rules.erase(
-			std::remove_if(
-				server_rules.begin(),
-				server_rules.end(),
-				[&](const std::string& rule) {
-					return std::find(local_rules.begin(), local_rules.end(), rule) != local_rules.end();
-				}
-			),
-			server_rules.end()
-		);
+bool SetCookieHTTP(std::string& url, const std::string& name, std::string& value) {
+	std::string cookie = name + "=" + value + "; path=/";
+	DWORD flags = INTERNET_COOKIE_HTTPONLY;
+
+	if (!InternetSetCookieExA(url.c_str(), nullptr, cookie.c_str(), flags, 0)) {
+		return false;
 	}
 
-	bool update_rules(std::string& host) {
-		char buffer[4096];
-		for (const auto& rule : server_rules) {
-			memset(buffer, 0, 4096);
-			std::string url = "";
-			url += host;
-			url += "files/rules/";
-			url += rule;
+	return true;
+}
 
-			HINTERNET file = InternetOpenUrlA(session, url.c_str(), NULL, 0, INTERNET_FLAG_RELOAD, 0);
-			if (!file) {
-				continue;
-			}
-
-			std::string write_path = "rules/";
-			write_path += rule;
-			std::ofstream output(write_path, std::ios::binary);
-			if (!output.is_open()) {
-				InternetCloseHandle(file);
-				continue;
-			}
-
-			DWORD read = 0;
-
-			while (InternetReadFile(file, buffer, 4096, &read) && read > 0) {
-				output.write(buffer, read);
-			}
-
-			output.close();
-			InternetCloseHandle(file);
-		}
-
-		return true;
+void UpdateIndicators(HINTERNET& connection, std::vector<std::string>& server_indicators) {
+	size_t buffer_size = 8192;
+	unsigned char* buffer = (unsigned char*)malloc(buffer_size);
+	if (buffer == NULL) {
+		return;
 	}
+	
+	for (const std::string& indicator : server_indicators) {
+		memset(buffer, 0, buffer_size);
+		
+		std::string uri = "/files/indicators/";
+		uri += indicator;
 
-	bool alert(std::string& data) {
-		if (!connection) return false;
-
-		HINTERNET request = HttpOpenRequestA(connection, "POST", "/api/child/alert", NULL, NULL, NULL, flags, 0);
+		HINTERNET request = HttpOpenRequestA(connection, "GET", uri.c_str(), NULL, NULL, NULL, INTERNET_FLAG_RELOAD, 0);
 		if (!request) {
-			return false;
+			continue;
 		}
 
-		std::string headers = "Content-Type: application/json\r\n";
-		bool result = HttpSendRequestA(request, headers.c_str(), static_cast<DWORD>(headers.size()), const_cast<char*>(data.data()), static_cast<DWORD>(data.size()));
-		if (!result) {
+		if (!HttpSendRequestA(request, NULL, 0, NULL, 0)) {
 			InternetCloseHandle(request);
-			return false;
+			continue;
 		}
 
-		char buffer[4096];
-		memset(buffer, 0, 4096);
+		std::string path = (indicator.substr(indicator.size() - 4) == ".bin") ? "indicators/bin/" : "indicators/txt/";
+		path += indicator;
+
+		std::ofstream disk_file(path, std::ios::binary);
+		if (!disk_file.is_open()) {
+			InternetCloseHandle(request);
+			continue;
+		}
+
 		DWORD read = 0;
-		std::string response;
-
-		while (InternetReadFile(request, buffer, 4096, &read) && read > 0) {
-			response.append(buffer, read);
+		while (InternetReadFile(request, buffer, buffer_size, &read) && read > 0) {
+			disk_file.write((char*)buffer, read);
 		}
 
+		disk_file.close();
 		InternetCloseHandle(request);
-		return true;
 	}
 
-	~HttpClient() {
-		disconnect();
+	free(buffer);
+	return;
+}
+
+void UpdateIndicatorList(HINTERNET& connection, std::vector<std::string> server_indicators, std::vector<std::string> local_indicators) {
+	std::string data = "";
+	HINTERNET request = HttpOpenRequestA(connection, "GET", "/repo.txt", NULL, NULL, NULL, INTERNET_FLAG_RELOAD, 0);
+
+	if (!request) {
+		return;
 	}
-};
+
+	size_t buffer_size = 512;
+	unsigned char* buffer = (unsigned char*)malloc(buffer_size);
+	if (buffer == NULL) {
+		return;
+	}
+	memset(buffer, 0, buffer_size);
+	DWORD read = 0;
+
+	while (InternetReadFile(request, buffer, buffer_size, &read) && read > 0) {
+		data.append((char*)buffer, read);
+	}
+	free(buffer);
+
+	InternetCloseHandle(request);
+
+	if (data.size() >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF) {
+		data.erase(0, 3);
+	}
+
+	std::istringstream iss(data);
+	std::string line;
+
+	while (std::getline(iss, line)) {
+		if (!line.empty()) {
+			server_indicators.push_back(line);
+		}
+	}
+
+	server_indicators.erase(
+		std::remove_if(
+			server_indicators.begin(),
+			server_indicators.end(),
+			[&](const std::string& indicator) {
+				return std::find(local_indicators.begin(), local_indicators.end(), indicator) != local_indicators.end();
+			}
+		),
+		server_indicators.end()
+	);
+
+	return;
+}
+
+void AlertServer(HINTERNET& connection, std::string& message) {
+	DWORD flags = INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
+	HINTERNET request = HttpOpenRequestA(connection, "POST", "/worker/alert", NULL, NULL, NULL, flags, 0);
+
+	DWORD security_flags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID | SECURITY_FLAG_IGNORE_REVOCATION;
+	InternetSetOptionA(request, INTERNET_OPTION_SECURITY_FLAGS, &security_flags, sizeof(security_flags));
+
+	std::string headers = "Content-Type: application/json\r\n";
+	if (!HttpSendRequestA(request, headers.c_str(), headers.size(), message.data(), message.size())) {
+		InternetCloseHandle(request);
+		return;
+	}
+
+	size_t buffer_size = 1024;
+	char* buffer = (char*)malloc(buffer_size);
+	if (buffer == NULL) {
+		InternetCloseHandle(request);
+		return;
+	}
+	memset(buffer, 0, buffer_size);
+	
+	DWORD read = 0;
+	while (InternetReadFile(request, buffer, buffer_size, &read) && read > 0) {
+		continue;
+	}
+
+	free(buffer);
+	InternetCloseHandle(request);
+	return;
+}
