@@ -15,8 +15,8 @@ to a centralized monitoring panel over HTTPS.
 ```
 +------------------+        HTTPS        +----------------------+
 |      Implant     |  <----------------> |        Server        |
-|   (C++ / WinAPI) |                    |  (Flask / Python)    |
-+------------------+                    +----------------------+
+|   (C++ / WinAPI) |                     |  (Flask / Python)    |
++------------------+                     +----------------------+
         |                                              |
         |                                              |
  Memory scanning                               Indicator storage
