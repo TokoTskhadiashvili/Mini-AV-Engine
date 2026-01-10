@@ -2,54 +2,124 @@
 #include "avengine.hpp"
 #include "parser.hpp"
 
-#define USER_AGENT "Mini AV Engine 1.0"
+#include <thread>
 
-std::vector<std::string> get_local_rules(std::string& rules_path) {
-	std::vector<std::string> local_rules;
-	WIN32_FIND_DATAA found_data;
+bool ConnectServer(HINTERNET& session, HINTERNET& connection, std::string& host, std::string& user_agent);
+bool DisconnectServer(HINTERNET& session, HINTERNET& connection);
+bool SetCookieHTTP(std::string& url, std::string& name, std::string& value);
+
+void UpdateIndicators(HINTERNET& connection, std::vector<std::string>& server_indicators);
+void UpdateIndicatorList(HINTERNET& connection, std::vector<std::string> server_indicators, std::vector<std::string> local_indicators);
+
+void AlertServer(HINTERNET& connection, std::string& message);
+
+void UpdateProcessList(std::map<DWORD, bool>& process_list);
+void ScanProcesses(HINTERNET& connection, std::vector<std::string>& local_indicators, std::map<DWORD, bool>& process_list, void (*AlertServer)(HINTERNET&, std::string&));
+void ScanFiles(HINTERNET& connection, std::vector<std::string>& local_indicators, std::vector<std::string>& target_directories, void (*AlertServer)(HINTERNET&, std::string&));
+
+std::map<std::string, std::string> ParseConfig(std::string& path);
+
+std::vector<std::string> _GetLocalIndicators(std::string& path) {
+	std::vector<std::string> indicators;
+	WIN32_FIND_DATAA data;
 	HANDLE find;
 
-	find = FindFirstFileA(rules_path.c_str(), &found_data);
+	find = FindFirstFileA(path.c_str(), &data);
 	if (find == INVALID_HANDLE_VALUE) {
 		return {};
 	}
 
-	while (FindNextFileA(find, &found_data) != 0) {
-		std::string filename = found_data.cFileName;
+	while (FindNextFileA(find, &data) != 0) {
+		std::string filename = data.cFileName;
 
-		if (filename != "." && filename != "..") {
-			if ((found_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-				local_rules.push_back(filename);
-			}
+		if ((filename != "." && filename != "..") && ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)) {
+			indicators.push_back(filename);
 		}
 	}
-
-	return local_rules;
 }
 
 int main(void) {
-	std::string config_path = "./config.cfg";
-	std::string rules_path = "./rules/";
+	std::map<DWORD, bool> process_list;
+
+	std::vector<std::string> server_indicators;
+	std::vector<std::string> local_indicators;
+
+	std::vector<std::string> target_directories;
+	std::vector<std::string> file_list_mal;
+
+	HINTERNET session, connection = nullptr;
+
+	/* Configuration */
 	std::string user_agent = USER_AGENT;
-	std::string server_address;
+	std::string server_addr;
 	std::string uuid;
+	unsigned int timeout = 0;
 
-	std::map<std::string, std::string> config_data = parse_config(config_path);
-	std::vector<std::string> local_rules = get_local_rules(rules_path);
+	/* Parse Configuration */
+	const std::map<std::string, std::string> config = ParseConfig(std::string("config.cfg"));
+	
+	bool server_addr_set = false;
+	bool uuid_set = false;
+	bool timeout_set = false;
 
-	server_address = config_data.at("SERVER_ADDRESS");
-	uuid = config_data.at("UUID");
+	for (const auto& [raw_key, raw_value] : config) {
+		std::string key = _TrimString(raw_key);
+		std::string value = _TrimString(raw_value);
 
-	HttpClient hc;
-	hc.connect(server_address, user_agent);
-	hc.set_cookie(server_address, std::string("uuid"), uuid);
+		if (key == "SERVER_ADDR" && server_addr_set == false) {
+			server_addr = value;
+			server_addr_set = true;
+		}
+		if (key == "UUID" && uuid_set == false) {
+			uuid = value;
+			uuid_set = true;
+		}
+		if (key == "TIMEOUT" && timeout_set == false) {
+			timeout = atoi(value.c_str());
+			timeout_set = true;
+		}
+	}
 
-	hc.fetch_all_rules(server_address);
-	hc.set_local_rules(local_rules);
-	hc.filter_rules();
-	hc.update_rules(server_address);
+	/* Connect to the server */
+	if (!ConnectServer(session, connection, server_addr, user_agent)) {
+		return -1;
+	}
 
-	AVEngine ave;
+	std::string cookie_url = "https://" + server_addr + ":8080/";
+	if (!SetCookieHTTP(cookie_url, std::string("UUID"), uuid)) {
+		InternetCloseHandle(connection);
+		InternetCloseHandle(session);
+		
+		return -1;
+	}
 
+	UpdateIndicatorList(connection, server_indicators, local_indicators);
+	UpdateIndicators(connection, server_indicators);
+
+	/* Start Process & File scanning */
+	while (1) {
+		std::thread process_scanner(
+			ScanProcesses,
+			std::ref(connection),
+			std::ref(local_indicators),
+			std::ref(process_list),
+			AlertServer
+		);
+		std::thread file_scanner(
+			ScanFiles,
+			std::ref(connection),
+			std::ref(local_indicators),
+			std::ref(target_directories),
+			AlertServer
+		);
+
+		process_scanner.join();
+		file_scanner.join();
+
+		KillAllMalicious(process_list);
+		Sleep(timeout);
+	}
+
+	DisconnectServer(session, connection);
 	return 0;
 }
